@@ -925,12 +925,14 @@ pi.sendMessage({
 });
 ```
 
+**Note on streaming:** The agent has two states: streaming (actively processing a turn with tool calls) and idle (waiting for input). The `deliverAs` and `triggerTurn` options behave differently depending on this state.
+
 **Options:**
 - `deliverAs` - Delivery mode:
   - `"steer"` (default) - Interrupts streaming. Delivered after current tool finishes, remaining tools skipped.
   - `"followUp"` - Waits for agent to finish. Delivered only when agent has no more tool calls.
   - `"nextTurn"` - Queued for next user prompt. Does not interrupt or trigger anything.
-- `triggerTurn: true` - If agent is idle, trigger an LLM response immediately. Only applies to `"steer"` and `"followUp"` modes (ignored for `"nextTurn"`).
+- `triggerTurn: true` - If true and agent is idle (not streaming), triggers a new LLM turn immediately. Ignored when deliverAs is "nextTurn".
 
 ### pi.sendUserMessage(content, options?)
 
