@@ -3,30 +3,42 @@
  * Supports Ctrl+G for external editor.
  */
 
-import { spawnSync } from "node:child_process";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import {
 	Container,
 	Editor,
 	type EditorOptions,
-	getEditorKeybindings,
+	type Focusable,
+	getKeybindings,
 	Spacer,
 	Text,
 	type TUI,
-} from "@mariozechner/pi-tui";
-import type { KeybindingsManager } from "../../../core/keybindings.js";
-import { getEditorTheme, theme } from "../theme/theme.js";
-import { DynamicBorder } from "./dynamic-border.js";
-import { appKeyHint, keyHint } from "./keybinding-hints.js";
+} from "@earendil-works/pi-tui";
+import type { KeybindingsManager } from "../../../core/keybindings.ts";
+import { editInExternalEditor } from "../external-editor.ts";
+import { getEditorTheme, theme } from "../theme/theme.ts";
+import { DynamicBorder } from "./dynamic-border.ts";
+import { keyHint } from "./keybinding-hints.ts";
 
-export class ExtensionEditorComponent extends Container {
+export interface ExtensionEditorOptions extends EditorOptions {
+	description?: string;
+}
+
+export class ExtensionEditorComponent extends Container implements Focusable {
 	private editor: Editor;
 	private onSubmitCallback: (value: string) => void;
 	private onCancelCallback: () => void;
 	private tui: TUI;
 	private keybindings: KeybindingsManager;
+	private externalEditorCommand: string;
+
+	private _focused = false;
+	get focused(): boolean {
+		return this._focused;
+	}
+	set focused(value: boolean) {
+		this._focused = value;
+		this.editor.focused = value;
+	}
 
 	constructor(
 		tui: TUI,
@@ -35,25 +47,36 @@ export class ExtensionEditorComponent extends Container {
 		prefill: string | undefined,
 		onSubmit: (value: string) => void,
 		onCancel: () => void,
-		options?: EditorOptions,
+		options?: ExtensionEditorOptions,
+		externalEditorCommand?: string,
 	) {
 		super();
 
 		this.tui = tui;
 		this.keybindings = keybindings;
+		this.externalEditorCommand =
+			externalEditorCommand ||
+			process.env.VISUAL ||
+			process.env.EDITOR ||
+			(process.platform === "win32" ? "notepad" : "nano");
 		this.onSubmitCallback = onSubmit;
 		this.onCancelCallback = onCancel;
+		const { description, ...editorOptions } = options ?? {};
 
 		// Add top border
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
 
-		// Add title
+		// Add title and optional description
 		this.addChild(new Text(theme.fg("accent", title), 1, 0));
+		if (description) {
+			this.addChild(new Spacer(1));
+			this.addChild(new Text(theme.fg("text", description), 1, 0));
+		}
 		this.addChild(new Spacer(1));
 
 		// Create editor
-		this.editor = new Editor(tui, getEditorTheme(), options);
+		this.editor = new Editor(tui, getEditorTheme(), editorOptions);
 		if (prefill) {
 			this.editor.setText(prefill);
 		}
@@ -66,14 +89,13 @@ export class ExtensionEditorComponent extends Container {
 		this.addChild(new Spacer(1));
 
 		// Add hint
-		const hasExternalEditor = !!(process.env.VISUAL || process.env.EDITOR);
 		const hint =
-			keyHint("selectConfirm", "submit") +
+			keyHint("tui.select.confirm", "submit") +
 			"  " +
-			keyHint("newLine", "newline") +
+			keyHint("tui.input.newLine", "newline") +
 			"  " +
-			keyHint("selectCancel", "cancel") +
-			(hasExternalEditor ? `  ${appKeyHint(this.keybindings, "externalEditor", "external editor")}` : "");
+			keyHint("tui.select.cancel", "cancel") +
+			`  ${keyHint("app.editor.external", "external editor")}`;
 		this.addChild(new Text(hint, 1, 0));
 
 		this.addChild(new Spacer(1));
@@ -83,16 +105,16 @@ export class ExtensionEditorComponent extends Container {
 	}
 
 	handleInput(keyData: string): void {
-		const kb = getEditorKeybindings();
+		const kb = getKeybindings();
 		// Escape or Ctrl+C to cancel
-		if (kb.matches(keyData, "selectCancel")) {
+		if (kb.matches(keyData, "tui.select.cancel")) {
 			this.onCancelCallback();
 			return;
 		}
 
 		// External editor (app keybinding)
-		if (this.keybindings.matches(keyData, "externalEditor")) {
-			this.openExternalEditor();
+		if (this.keybindings.matches(keyData, "app.editor.external")) {
+			void this.handleOpenExternalEditor();
 			return;
 		}
 
@@ -100,36 +122,19 @@ export class ExtensionEditorComponent extends Container {
 		this.editor.handleInput(keyData);
 	}
 
-	private openExternalEditor(): void {
-		const editorCmd = process.env.VISUAL || process.env.EDITOR;
-		if (!editorCmd) {
-			return;
-		}
-
-		const currentText = this.editor.getText();
-		const tmpFile = path.join(os.tmpdir(), `pi-extension-editor-${Date.now()}.md`);
-
+	private async handleOpenExternalEditor(): Promise<void> {
+		const content = this.editor.getText();
+		this.tui.stop();
 		try {
-			fs.writeFileSync(tmpFile, currentText, "utf-8");
-			this.tui.stop();
-
-			const [editor, ...editorArgs] = editorCmd.split(" ");
-			const result = spawnSync(editor, [...editorArgs, tmpFile], {
-				stdio: "inherit",
+			const result = await editInExternalEditor({
+				command: this.externalEditorCommand,
+				content,
 			});
-
-			if (result.status === 0) {
-				const newContent = fs.readFileSync(tmpFile, "utf-8").replace(/\n$/, "");
-				this.editor.setText(newContent);
+			if (result.status === "complete") {
+				this.editor.setText(result.content);
 			}
 		} finally {
-			try {
-				fs.unlinkSync(tmpFile);
-			} catch {
-				// Ignore cleanup errors
-			}
 			this.tui.start();
-			// Force full re-render since external editor uses alternate screen
 			this.tui.requestRender(true);
 		}
 	}

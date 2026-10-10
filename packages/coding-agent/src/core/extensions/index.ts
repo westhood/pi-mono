@@ -2,13 +2,14 @@
  * Extension system for lifecycle events and custom tools.
  */
 
-export type { SlashCommandInfo, SlashCommandLocation, SlashCommandSource } from "../slash-commands.js";
+export type { SlashCommandInfo, SlashCommandSource } from "../slash-commands.ts";
+export type { SourceInfo } from "../source-info.ts";
 export {
 	createExtensionRuntime,
 	discoverAndLoadExtensions,
 	loadExtensionFromFactory,
 	loadExtensions,
-} from "./loader.js";
+} from "./loader.ts";
 export type {
 	ExtensionErrorListener,
 	ForkHandler,
@@ -16,35 +17,60 @@ export type {
 	NewSessionHandler,
 	ShutdownHandler,
 	SwitchSessionHandler,
-} from "./runner.js";
-export { ExtensionRunner } from "./runner.js";
+} from "./runner.ts";
+export { ExtensionRunner } from "./runner.ts";
 export type {
+	AfterProviderResponseEvent,
+	AgentActivityOutcome,
+	AgentBeforeSettleEvent,
+	AgentBeforeSettleEventResult,
 	AgentEndEvent,
+	AgentSettledEvent,
 	AgentStartEvent,
 	// Re-exports
 	AgentToolResult,
 	AgentToolUpdateCallback,
-	// App keybindings (for custom editors)
-	AppAction,
 	AppendEntryHandler,
+	// App keybindings (for custom editors)
+	AppKeybinding,
+	AutocompleteProviderFactory,
 	// Events - Tool (ToolCallEvent types)
 	BashToolCallEvent,
 	BashToolResultEvent,
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
+	BeforeProviderHeadersEvent,
+	BeforeProviderRequestEvent,
+	BeforeProviderRequestEventResult,
+	BoundaryContextPreview,
+	BoundaryResult,
+	BoundaryState,
+	BuildSystemPromptOptions,
+	CacheWarmingDecisionEvent,
+	CacheWarmingDecisionEventResult,
+	CompactionEntryDraft,
 	// Context
 	CompactOptions,
+	ContextEditEntryDraft,
 	// Events - Agent
 	ContextEvent,
 	// Event Results
 	ContextEventResult,
 	ContextUsage,
+	ContextWithSystemEvent,
+	CustomEntryDraft,
+	CustomMessageEntryDraft,
 	CustomToolCallEvent,
 	CustomToolResultEvent,
+	EditorFactory,
 	EditToolCallEvent,
 	EditToolResultEvent,
+	// Message and Entry Rendering
+	EntryRenderer,
+	EntryRenderOptions,
 	ExecOptions,
 	ExecResult,
+	ExecuteToolOptions,
 	Extension,
 	ExtensionActions,
 	// API
@@ -59,11 +85,14 @@ export type {
 	ExtensionFactory,
 	ExtensionFlag,
 	ExtensionHandler,
+	ExtensionMode,
 	// Runtime
 	ExtensionRuntime,
 	ExtensionShortcut,
+	ExtensionToolContext,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
+	ExtensionVirtualModel,
 	ExtensionWidgetOptions,
 	FindToolCallEvent,
 	FindToolResultEvent,
@@ -73,6 +102,7 @@ export type {
 	GetThinkingLevelHandler,
 	GrepToolCallEvent,
 	GrepToolResultEvent,
+	InlineExtension,
 	// Events - Input
 	InputEvent,
 	InputEventResult,
@@ -81,23 +111,37 @@ export type {
 	LoadExtensionsResult,
 	LsToolCallEvent,
 	LsToolResultEvent,
+	MarkdownTransformContext,
+	MarkdownTransformer,
+	McpServersChangeEvent,
 	// Events - Message
 	MessageEndEvent,
-	// Message Rendering
+	MessageEndEventResult,
 	MessageRenderer,
 	MessageRenderOptions,
 	MessageStartEvent,
 	MessageUpdateEvent,
 	ModelSelectEvent,
 	ModelSelectSource,
+	NormalizedBuildSystemPromptOptions,
+	PowerShellToolCallEvent,
+	PowerShellToolResultEvent,
+	ProjectTrustContext,
+	ProjectTrustEvent,
+	ProjectTrustEventDecision,
+	ProjectTrustEventResult,
+	ProjectTrustHandler,
 	// Provider Registration
 	ProviderConfig,
 	ProviderModelConfig,
+	ProviderStreamEvent,
 	ReadToolCallEvent,
 	ReadToolResultEvent,
 	// Commands
 	RegisteredCommand,
 	RegisteredTool,
+	ReplacedSessionContext,
+	ResolvedCommand,
 	// Events - Resources
 	ResourcesDiscoverEvent,
 	ResourcesDiscoverResult,
@@ -111,19 +155,22 @@ export type {
 	SessionBeforeSwitchResult,
 	SessionBeforeTreeEvent,
 	SessionBeforeTreeResult,
+	SessionBoundaryDraft,
 	SessionCompactEvent,
+	SessionCompactFailedEvent,
 	SessionEvent,
-	SessionForkEvent,
+	SessionInfoChangedEvent,
 	SessionShutdownEvent,
 	// Events - Session
 	SessionStartEvent,
-	SessionSwitchEvent,
 	SessionTreeEvent,
 	SetActiveToolsHandler,
 	SetLabelHandler,
 	SetModelHandler,
 	SetThinkingLevelHandler,
 	TerminalInputHandler,
+	ThinkingLevelSelectEvent,
+	ToolAnnotations,
 	// Events - Tool
 	ToolCallEvent,
 	ToolCallEventResult,
@@ -131,36 +178,46 @@ export type {
 	ToolDefinition,
 	// Events - Tool Execution
 	ToolExecutionEndEvent,
+	// Tool execution mode
+	ToolExecutionMode,
 	ToolExecutionStartEvent,
 	ToolExecutionUpdateEvent,
+	ToolExposure,
 	ToolInfo,
+	ToolLoadout,
+	ToolLoadoutChanges,
+	ToolNamespace,
+	ToolRendererResolver,
+	ToolRenderers,
 	ToolRenderResultOptions,
 	ToolResultEvent,
 	ToolResultEventResult,
 	TreePreparation,
 	TurnEndEvent,
+	TurnEndEventResult,
 	TurnStartEvent,
+	UIPromptEndEvent,
+	UIPromptKind,
+	UIPromptStartEvent,
 	// Events - User Bash
 	UserBashEvent,
 	UserBashEventResult,
 	WidgetPlacement,
+	WorkingIndicatorOptions,
 	WriteToolCallEvent,
 	WriteToolResultEvent,
-} from "./types.js";
+} from "./types.ts";
 // Type guards
 export {
+	defineTool,
 	isBashToolResult,
 	isEditToolResult,
 	isFindToolResult,
 	isGrepToolResult,
 	isLsToolResult,
+	isPowerShellToolResult,
 	isReadToolResult,
 	isToolCallEventType,
 	isWriteToolResult,
-} from "./types.js";
-export {
-	wrapRegisteredTool,
-	wrapRegisteredTools,
-	wrapToolsWithExtensions,
-	wrapToolWithExtensions,
-} from "./wrapper.js";
+} from "./types.ts";
+export { wrapRegisteredTool, wrapRegisteredTools } from "./wrapper.ts";

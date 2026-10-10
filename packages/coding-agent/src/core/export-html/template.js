@@ -76,8 +76,8 @@
 
         // Create nodes
         for (const entry of entries) {
-          nodeMap.set(entry.id, { 
-            entry, 
+          nodeMap.set(entry.id, {
+            entry,
             children: [],
             label: labelMap.get(entry.id)
           });
@@ -200,7 +200,7 @@
         const stack = [];
 
         // Add roots (prioritize branch containing active leaf)
-        const orderedRoots = [...roots].sort((a, b) => 
+        const orderedRoots = [...roots].sort((a, b) =>
           Number(containsActive.get(b)) - Number(containsActive.get(a))
         );
         for (let i = orderedRoots.length - 1; i >= 0; i--) {
@@ -217,7 +217,7 @@
           const multipleChildren = children.length > 1;
 
           // Order children (active branch first)
-          const orderedChildren = [...children].sort((a, b) => 
+          const orderedChildren = [...children].sort((a, b) =>
             Number(containsActive.get(b)) - Number(containsActive.get(a))
           );
 
@@ -313,6 +313,22 @@
         return '';
       }
 
+      /**
+       * Parse a skill block from message text.
+       * Returns null if the text doesn't contain a skill block.
+       * Matches the format: <skill name="..." location="...">\n...\n</skill>\n\nuser message
+       */
+      function parseSkillBlock(text) {
+        const match = text.match(/^<skill name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n<\/skill>(?:\n\n([\s\S]+))?$/);
+        if (!match) return null;
+        return {
+          name: match[1],
+          location: match[2],
+          content: match[3],
+          userMessage: match[4]?.trim() || undefined,
+        };
+      }
+
       function getSearchableText(entry, label) {
         const parts = [];
         if (label) parts.push(label);
@@ -340,6 +356,9 @@
             break;
           case 'thinking_level_change':
             parts.push('thinking', entry.thinkingLevel);
+            break;
+          case 'context_edit':
+            parts.push('context edit', entry.replacement === null ? 'omit' : 'replace', entry.targetId);
             break;
         }
 
@@ -369,7 +388,7 @@
           }
 
           // Apply filter mode
-          const isSettingsEntry = ['label', 'custom', 'model_change', 'thinking_level_change'].includes(entry.type);
+          const isSettingsEntry = ['label', 'custom', 'context_edit', 'model_change', 'thinking_level_change'].includes(entry.type);
           let passesFilter = true;
 
           switch (filterMode) {
@@ -589,9 +608,24 @@
       }
 
       function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
+        return String(text)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      function sanitizeMarkdownUrl(value) {
+        const href = String(value || '').trim().replace(/[\x00-\x1f\x7f]/g, '');
+        if (!href) return href;
+
+        const scheme = href.match(/^([A-Za-z][A-Za-z0-9+.-]*):/);
+        if (scheme && !/^(https?|mailto|tel|ftp)$/i.test(scheme[1])) {
+          return null;
+        }
+
+        return href;
       }
 
       /**
@@ -613,7 +647,16 @@
           case 'message': {
             const msg = entry.message;
             if (msg.role === 'user') {
-              const content = truncate(normalize(extractContent(msg.content)));
+              const rawContent = extractContent(msg.content);
+              const skillBlock = parseSkillBlock(rawContent);
+              if (skillBlock) {
+                let treeHtml = labelHtml + `<span class="tree-role-skill">skill:</span> ${escapeHtml(skillBlock.name)}`;
+                if (skillBlock.userMessage) {
+                  treeHtml += ` · <span class="tree-role-user">user:</span> ${escapeHtml(truncate(normalize(skillBlock.userMessage)))}`;
+                }
+                return treeHtml;
+              }
+              const content = truncate(normalize(rawContent));
               return labelHtml + `<span class="tree-role-user">user:</span> ${escapeHtml(content)}`;
             }
             if (msg.role === 'assistant') {
@@ -634,13 +677,13 @@
               if (toolCall) {
                 return labelHtml + `<span class="tree-role-tool">${escapeHtml(formatToolCall(toolCall.name, toolCall.arguments))}</span>`;
               }
-              return labelHtml + `<span class="tree-role-tool">[${msg.toolName || 'tool'}]</span>`;
+              return labelHtml + `<span class="tree-role-tool">[${escapeHtml(msg.toolName || 'tool')}]</span>`;
             }
             if (msg.role === 'bashExecution') {
               const cmd = truncate(normalize(msg.command || ''));
               return labelHtml + `<span class="tree-role-tool">[bash]:</span> ${escapeHtml(cmd)}`;
             }
-            return labelHtml + `<span class="tree-muted">[${msg.role}]</span>`;
+            return labelHtml + `<span class="tree-muted">[${escapeHtml(msg.role)}]</span>`;
           }
           case 'compaction':
             return labelHtml + `<span class="tree-compaction">[compaction: ${Math.round(entry.tokensBefore/1000)}k tokens]</span>`;
@@ -653,11 +696,13 @@
             return labelHtml + `<span class="tree-custom">[${escapeHtml(entry.customType)}]:</span> ${escapeHtml(truncate(normalize(content)))}`;
           }
           case 'model_change':
-            return labelHtml + `<span class="tree-muted">[model: ${entry.modelId}]</span>`;
+            return labelHtml + `<span class="tree-muted">[model: ${escapeHtml(entry.modelId)}]</span>`;
           case 'thinking_level_change':
-            return labelHtml + `<span class="tree-muted">[thinking: ${entry.thinkingLevel}]</span>`;
+            return labelHtml + `<span class="tree-muted">[thinking: ${escapeHtml(entry.thinkingLevel)}]</span>`;
+          case 'context_edit':
+            return labelHtml + `<span class="tree-muted">[context ${entry.replacement === null ? 'omit' : 'replace'}: ${escapeHtml(entry.targetId)}]</span>`;
           default:
-            return labelHtml + `<span class="tree-muted">[${entry.type}]</span>`;
+            return labelHtml + `<span class="tree-muted">[${escapeHtml(entry.type)}]</span>`;
         }
       }
 
@@ -709,6 +754,7 @@
             div.appendChild(content);
             // Navigate to the newest leaf through this node, but scroll to the clicked node
             div.addEventListener('click', () => {
+              if (window.getSelection().toString()) return;
               const leafId = findNewestLeaf(entry.id);
               navigateTo(leafId, 'target', entry.id);
             });
@@ -827,7 +873,7 @@
               previewHighlighted = escapeHtml(previewCode);
             }
 
-            return `<div class="tool-output expandable" onclick="this.classList.toggle('expanded')">
+            return `<div class="tool-output expandable" onclick="if(window.getSelection().toString())return;this.classList.toggle('expanded')">
               <div class="output-preview"><pre><code class="hljs">${previewHighlighted}</code></pre>
               <div class="expand-hint">... (${remaining} more lines)</div></div>
               <div class="output-full"><pre><code class="hljs">${highlighted}</code></pre></div></div>`;
@@ -838,7 +884,7 @@
 
         // Plain text output
         if (remaining > 0) {
-          let out = '<div class="tool-output expandable" onclick="this.classList.toggle(\'expanded\')">';
+          let out = '<div class="tool-output expandable" onclick="if(window.getSelection().toString())return;this.classList.toggle(\'expanded\')">';
           out += '<div class="output-preview">';
           for (const line of displayLines) {
             out += `<div>${escapeHtml(replaceTabs(line))}</div>`;
@@ -879,12 +925,28 @@
         const renderResultImages = () => {
           const images = getResultImages();
           if (images.length === 0) return '';
-          return '<div class="tool-images">' + 
-            images.map(img => `<img src="data:${img.mimeType};base64,${img.data}" class="tool-image" />`).join('') + 
+          return '<div class="tool-images">' +
+            images.map(img => `<img src="data:${escapeHtml(img.mimeType || 'image/png')};base64,${escapeHtml(img.data || '')}" class="tool-image" />`).join('') +
             '</div>';
         };
 
-        let html = `<div class="tool-execution ${statusClass}">`;
+        // Calls this tool made to other tools (for example from a codemode script), recorded without results.
+        const renderNestedCalls = () => {
+          const nested = result?.nestedCalls;
+          if (!nested || !Array.isArray(nested.calls) || nested.calls.length === 0) return '';
+          const icons = { ok: '✓', error: '✗', unfinished: '…' };
+          const lines = nested.calls.map(c => {
+            const args = c.arguments ? JSON.stringify(c.arguments) : `[arguments omitted, ${c.argumentsBytes} bytes]`;
+            const duration = c.durationMs !== undefined ? ` ${c.durationMs}ms` : '';
+            const error = c.error ? `\n    ${c.error.split('\n').join('\n    ')}` : '';
+            return `${icons[c.status] || '?'} ${c.name} ${args}${duration}${error}`;
+          });
+          const title = `Nested calls: ${nested.calls.length}${nested.complete ? '' : ' (incomplete record)'}`;
+          return formatExpandableOutput([title, ...lines].join('\n'), 1);
+        };
+
+        const toolDomId = `tool-call-${escapeHtml(call.id)}`;
+        let html = `<div class="tool-execution ${statusClass}" id="${toolDomId}">`;
         const args = call.arguments || {};
         const name = call.name;
 
@@ -963,31 +1025,44 @@
             }
             break;
           }
+          case 'ls': {
+            const dirPath = str(args.path);
+            const limit = args.limit;
+
+            let pathHtml = dirPath === null ? invalidArg : escapeHtml(shortenPath(dirPath || '.'));
+            if (limit !== undefined) {
+              pathHtml += ` <span class="line-count">(limit ${escapeHtml(String(limit))})</span>`;
+            }
+
+            html += `<div class="tool-header"><span class="tool-name">ls</span> <span class="tool-path">${pathHtml}</span></div>`;
+            if (result) {
+              const output = getResultText().trim();
+              if (output) html += formatExpandableOutput(output, 20);
+            }
+            break;
+          }
           default: {
             // Check for pre-rendered custom tool HTML
             const rendered = renderedTools?.[call.id];
-            if (rendered?.callHtml || rendered?.resultHtml) {
+            if (rendered?.callHtml || rendered?.resultHtmlCollapsed || rendered?.resultHtmlExpanded) {
               // Custom tool with pre-rendered HTML from TUI renderer
               if (rendered.callHtml) {
                 html += `<div class="tool-header ansi-rendered">${rendered.callHtml}</div>`;
               } else {
                 html += `<div class="tool-header"><span class="tool-name">${escapeHtml(name)}</span></div>`;
               }
-              
-              if (rendered.resultHtml) {
-                // Apply same truncation as built-in tools (10 lines)
-                const lines = rendered.resultHtml.split('\n');
-                if (lines.length > 10) {
-                  const preview = lines.slice(0, 10).join('\n');
-                  html += `<div class="tool-output expandable ansi-rendered" onclick="this.classList.toggle('expanded')">
-                    <div class="output-preview">${preview}<div class="expand-hint">... (${lines.length - 10} more lines)</div></div>
-                    <div class="output-full">${rendered.resultHtml}</div>
-                  </div>`;
-                } else {
-                  html += `<div class="tool-output ansi-rendered">${rendered.resultHtml}</div>`;
-                }
+
+              if (rendered.resultHtmlCollapsed && rendered.resultHtmlExpanded && rendered.resultHtmlCollapsed !== rendered.resultHtmlExpanded) {
+                // Both collapsed and expanded differ - render expandable section
+                html += `<div class="tool-output expandable ansi-rendered" onclick="if(window.getSelection().toString())return;this.classList.toggle('expanded')">
+                  <div class="output-preview">${rendered.resultHtmlCollapsed}</div>
+                  <div class="output-full">${rendered.resultHtmlExpanded}</div>
+                </div>`;
+              } else if (rendered.resultHtmlExpanded) {
+                // Only expanded exists (or collapsed is identical) - show directly
+                html += `<div class="tool-output ansi-rendered">${rendered.resultHtmlExpanded}</div>`;
               } else if (result) {
-                // Fallback to JSON for result if no pre-rendered HTML
+                // No pre-rendered result HTML - fallback to JSON
                 const output = getResultText();
                 if (output) html += formatExpandableOutput(output, 10);
               }
@@ -1003,6 +1078,7 @@
           }
         }
 
+        html += renderNestedCalls();
         html += '</div>';
         return html;
       }
@@ -1042,21 +1118,21 @@
         // Check for injected base URL (used when loaded in iframe via srcdoc)
         const baseUrlMeta = document.querySelector('meta[name="pi-share-base-url"]');
         const baseUrl = baseUrlMeta ? baseUrlMeta.content : window.location.href.split('?')[0];
-        
+
         const url = new URL(window.location.href);
         // Find the gist ID (first query param without value, e.g., ?abc123)
         const gistId = Array.from(url.searchParams.keys()).find(k => !url.searchParams.get(k));
-        
+
         // Build the share URL
         const params = new URLSearchParams();
         params.set('leafId', currentLeafId);
         params.set('targetId', entryId);
-        
+
         // If we have an injected base URL (iframe context), use it directly
         if (baseUrlMeta) {
           return `${baseUrl}&${params.toString()}`;
         }
-        
+
         // Otherwise build from current location (direct file access)
         url.search = gistId ? `?${gistId}&${params.toString()}` : `?${params.toString()}`;
         return url.toString();
@@ -1076,7 +1152,7 @@
         } catch (err) {
           // Clipboard API failed, try fallback
         }
-        
+
         // Fallback for HTTP or when Clipboard API is unavailable
         if (!success) {
           try {
@@ -1092,7 +1168,7 @@
             console.error('Failed to copy:', err);
           }
         }
-        
+
         if (success && button) {
           const originalHtml = button.innerHTML;
           button.innerHTML = '✓';
@@ -1108,7 +1184,7 @@
        * Render the copy-link button HTML for a message.
        */
       function renderCopyLinkButton(entryId) {
-        return `<button class="copy-link-btn" data-entry-id="${entryId}" title="Copy link to this message">
+        return `<button class="copy-link-btn" data-entry-id="${escapeHtml(entryId)}" title="Copy link to this message">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
             <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
@@ -1119,29 +1195,65 @@
       function renderEntry(entry) {
         const ts = formatTimestamp(entry.timestamp);
         const tsHtml = ts ? `<div class="message-timestamp">${ts}</div>` : '';
-        const entryId = `entry-${entry.id}`;
+        const entryDomId = `entry-${escapeHtml(entry.id)}`;
         const copyBtnHtml = renderCopyLinkButton(entry.id);
 
         if (entry.type === 'message') {
           const msg = entry.message;
 
           if (msg.role === 'user') {
-            let html = `<div class="user-message" id="${entryId}">${copyBtnHtml}${tsHtml}`;
             const content = msg.content;
+            const text = typeof content === 'string' ? content :
+              content.filter(c => c.type === 'text').map(c => c.text).join('\n');
+            const skillBlock = parseSkillBlock(text);
+
+            if (skillBlock) {
+              // Collect images from content array
+              const images = Array.isArray(content) ? content.filter(c => c.type === 'image') : [];
+              const hasUserContent = skillBlock.userMessage || images.length > 0;
+              let html = `<div class="skill-user-entry" id="${entryDomId}">${copyBtnHtml}${tsHtml}`;
+
+              // Skill invocation (collapsed by default, click to expand)
+              html += `<div class="skill-invocation" onclick="if(window.getSelection().toString())return;this.classList.toggle('expanded')">
+                <div class="skill-invocation-label">[skill] ${escapeHtml(skillBlock.name)}</div>
+                <div class="skill-invocation-collapsed">${escapeHtml(skillBlock.name)} (click to expand)</div>
+                <div class="skill-invocation-content markdown-content">${safeMarkedParse(skillBlock.content)}</div>
+              </div>`;
+
+              // User message (separate block if present)
+              if (hasUserContent) {
+                html += '<div class="user-message">';
+                if (images.length > 0) {
+                  html += '<div class="message-images">';
+                  for (const img of images) {
+                    html += `<img src="data:${escapeHtml(img.mimeType || 'image/png')};base64,${escapeHtml(img.data || '')}" class="message-image" />`;
+                  }
+                  html += '</div>';
+                }
+                if (skillBlock.userMessage) {
+                  html += `<div class="markdown-content">${safeMarkedParse(skillBlock.userMessage)}</div>`;
+                }
+                html += '</div>';
+              }
+
+              html += '</div>';
+              return html;
+            }
+
+            // No skill block - normal user message
+            let html = `<div class="user-message" id="${entryDomId}">${copyBtnHtml}${tsHtml}`;
 
             if (Array.isArray(content)) {
               const images = content.filter(c => c.type === 'image');
               if (images.length > 0) {
                 html += '<div class="message-images">';
                 for (const img of images) {
-                  html += `<img src="data:${img.mimeType};base64,${img.data}" class="message-image" />`;
+                  html += `<img src="data:${escapeHtml(img.mimeType || 'image/png')};base64,${escapeHtml(img.data || '')}" class="message-image" />`;
                 }
                 html += '</div>';
               }
             }
 
-            const text = typeof content === 'string' ? content : 
-              content.filter(c => c.type === 'text').map(c => c.text).join('\n');
             if (text.trim()) {
               html += `<div class="markdown-content">${safeMarkedParse(text)}</div>`;
             }
@@ -1150,7 +1262,7 @@
           }
 
           if (msg.role === 'assistant') {
-            let html = `<div class="assistant-message" id="${entryId}">${copyBtnHtml}${tsHtml}`;
+            let html = `<div class="assistant-message" id="${entryDomId}">${copyBtnHtml}${tsHtml}`;
 
             for (const block of msg.content) {
               if (block.type === 'text' && block.text.trim()) {
@@ -1181,7 +1293,7 @@
 
           if (msg.role === 'bashExecution') {
             const isError = msg.cancelled || (msg.exitCode !== 0 && msg.exitCode !== null);
-            let html = `<div class="tool-execution ${isError ? 'error' : 'success'}" id="${entryId}">${tsHtml}`;
+            let html = `<div class="tool-execution ${isError ? 'error' : 'success'}" id="${entryDomId}">${tsHtml}`;
             html += `<div class="tool-command">$ ${escapeHtml(msg.command)}</div>`;
             if (msg.output) html += formatExpandableOutput(msg.output, 10);
             if (msg.cancelled) {
@@ -1197,11 +1309,11 @@
         }
 
         if (entry.type === 'model_change') {
-          return `<div class="model-change" id="${entryId}">${tsHtml}Switched to model: <span class="model-name">${escapeHtml(entry.provider)}/${escapeHtml(entry.modelId)}</span></div>`;
+          return `<div class="model-change" id="${entryDomId}">${tsHtml}Switched to model: <span class="model-name">${escapeHtml(entry.provider)}/${escapeHtml(entry.modelId)}</span></div>`;
         }
 
         if (entry.type === 'compaction') {
-          return `<div class="compaction" id="${entryId}" onclick="this.classList.toggle('expanded')">
+          return `<div class="compaction" id="${entryDomId}" onclick="if(window.getSelection().toString())return;this.classList.toggle('expanded')">
             <div class="compaction-label">[compaction]</div>
             <div class="compaction-collapsed">Compacted from ${entry.tokensBefore.toLocaleString()} tokens</div>
             <div class="compaction-content"><strong>Compacted from ${entry.tokensBefore.toLocaleString()} tokens</strong>\n\n${escapeHtml(entry.summary)}</div>
@@ -1209,15 +1321,16 @@
         }
 
         if (entry.type === 'branch_summary') {
-          return `<div class="branch-summary" id="${entryId}">${tsHtml}
+          return `<div class="branch-summary" id="${entryDomId}">${tsHtml}
             <div class="branch-summary-header">Branch Summary</div>
             <div class="markdown-content">${safeMarkedParse(entry.summary)}</div>
           </div>`;
         }
 
-        if (entry.type === 'custom_message' && entry.display) {
-          return `<div class="hook-message" id="${entryId}">${tsHtml}
-            <div class="hook-type">[${escapeHtml(entry.customType)}]</div>
+        if (entry.type === 'custom_message') {
+          const hidden = entry.display === false;
+          return `<div class="hook-message${hidden ? ' hook-message-hidden' : ''}" id="${entryDomId}">${tsHtml}
+            <div class="hook-type">[${escapeHtml(entry.customType)}]${hidden ? ' · Hidden in terminal' : ''}</div>
             <div class="markdown-content">${safeMarkedParse(typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content))}</div>
           </div>`;
         }
@@ -1293,12 +1406,17 @@
           <div class="header">
             <h1>Session: ${escapeHtml(header?.id || 'unknown')}</h1>
             <div class="help-bar">
-              <span>Ctrl+T toggle thinking · Ctrl+O toggle tools</span>
-              <button class="download-json-btn" onclick="downloadSessionJson()" title="Download session as JSONL">↓ JSONL</button>
+              <span class="help-hint">T toggle thinking · O toggle tools · H toggle hidden messages</span>
+              <div class="help-actions">
+                <button type="button" class="header-toggle-btn" data-action="toggle-thinking" aria-pressed="${thinkingExpanded}" title="Toggle thinking (T)">Toggle thinking</button>
+                <button type="button" class="header-toggle-btn" data-action="toggle-tools" aria-pressed="${toolOutputsExpanded}" title="Toggle tools (O)">Toggle tools</button>
+                <button type="button" class="header-toggle-btn" data-action="toggle-hidden-messages" aria-pressed="${showHiddenMessages}" title="Show custom messages marked as hidden in the terminal (H).">${showHiddenMessages ? 'Hide hidden messages' : 'Show hidden messages'}</button>
+                <button type="button" class="download-json-btn" onclick="downloadSessionJson()" title="Download session as JSONL">↓ JSONL</button>
+              </div>
             </div>
             <div class="header-info">
               <div class="info-item"><span class="info-label">Date:</span><span class="info-value">${header?.timestamp ? new Date(header.timestamp).toLocaleString() : 'unknown'}</span></div>
-              <div class="info-item"><span class="info-label">Models:</span><span class="info-value">${globalStats.models.join(', ') || 'unknown'}</span></div>
+              <div class="info-item"><span class="info-label">Models:</span><span class="info-value">${escapeHtml(globalStats.models.join(', ') || 'unknown')}</span></div>
               <div class="info-item"><span class="info-label">Messages:</span><span class="info-value">${msgParts.join(', ') || '0'}</span></div>
               <div class="info-item"><span class="info-label">Tool Calls:</span><span class="info-value">${globalStats.toolCalls}</span></div>
               <div class="info-item"><span class="info-label">Tokens:</span><span class="info-value">${tokenParts.join(' ') || '0'}</span></div>
@@ -1313,7 +1431,7 @@
           if (lines.length > previewLines) {
             const preview = lines.slice(0, previewLines).join('\n');
             const remaining = lines.length - previewLines;
-            html += `<div class="system-prompt expandable" onclick="this.classList.toggle('expanded')">
+            html += `<div class="system-prompt expandable" onclick="if(window.getSelection().toString())return;this.classList.toggle('expanded')">
               <div class="system-prompt-header">System Prompt</div>
               <div class="system-prompt-preview">${escapeHtml(preview)}</div>
               <div class="system-prompt-expand-hint">... (${remaining} more lines, click to expand)</div>
@@ -1350,7 +1468,7 @@
                   }
                   paramsHtml += `</div>`;
                 }
-                return `<div class="tool-item" onclick="this.classList.toggle('params-expanded')"><span class="tool-item-name">${escapeHtml(t.name)}</span> - <span class="tool-item-desc">${escapeHtml(t.description)}</span> <span class="tool-params-hint"></span><div class="tool-params-content">${paramsHtml}</div></div>`;
+                return `<div class="tool-item" onclick="if(window.getSelection().toString())return;this.classList.toggle('params-expanded')"><span class="tool-item-name">${escapeHtml(t.name)}</span> - <span class="tool-item-desc">${escapeHtml(t.description)}</span> <span class="tool-params-hint"></span><div class="tool-params-content">${paramsHtml}</div></div>`;
               }).join('')}
             </div>
           </div>`;
@@ -1365,6 +1483,16 @@
 
       // Cache for rendered entry DOM nodes
       const entryCache = new Map();
+
+      function getScrollTargetElementId(entryId) {
+        const entry = byId.get(entryId);
+        if (entry?.type === 'message' && entry.message.role === 'toolResult' && entry.message.toolCallId) {
+          // getElementById() matches the parsed DOM id attribute, whose HTML entities
+          // were already resolved from the escaped id rendered by renderToolCall().
+          return `tool-call-${entry.message.toolCallId}`;
+        }
+        return `entry-${entryId}`;
+      }
 
       function renderEntryToNode(entry) {
         // Check cache first
@@ -1390,11 +1518,16 @@
       function navigateTo(targetId, scrollMode = 'target', scrollToEntryId = null) {
         currentLeafId = targetId;
         currentTargetId = scrollToEntryId || targetId;
+        const targetEntry = byId.get(currentTargetId);
+        if (scrollMode === 'target' && targetEntry?.type === 'custom_message' && targetEntry.display === false) {
+          setHiddenMessagesVisible(true);
+        }
         const path = getPath(targetId);
 
         renderTree();
 
         document.getElementById('header-container').innerHTML = renderHeader();
+        attachHeaderHandlers();
 
         // Build messages using cached DOM nodes
         const messagesEl = document.getElementById('messages');
@@ -1409,6 +1542,10 @@
 
         messagesEl.innerHTML = '';
         messagesEl.appendChild(fragment);
+
+        // Cached nodes contain their initial presentation; reapply the viewer's toggle states.
+        setThinkingExpanded(thinkingExpanded);
+        setToolOutputsExpanded(toolOutputsExpanded);
 
         // Attach click handlers for copy-link buttons
         messagesEl.querySelectorAll('.copy-link-btn').forEach(btn => {
@@ -1426,9 +1563,12 @@
           if (scrollMode === 'bottom') {
             content.scrollTop = content.scrollHeight;
           } else if (scrollMode === 'target') {
-            // If scrollToEntryId is provided, scroll to that specific entry
+            // If scrollToEntryId is provided, scroll to that specific entry.
+            // Tool result entries are rendered inside their assistant tool-call block,
+            // so route them to the visible tool-call element instead.
             const scrollTargetId = scrollToEntryId || targetId;
-            const targetEl = document.getElementById(`entry-${scrollTargetId}`);
+            const targetEl = document.getElementById(getScrollTargetElementId(scrollTargetId)) ||
+              document.getElementById(`entry-${scrollTargetId}`);
             if (targetEl) {
               targetEl.scrollIntoView({ block: 'center' });
               // Briefly highlight the target message
@@ -1445,16 +1585,60 @@
       // INITIALIZATION
       // ============================================================
 
-      // Escape HTML tags in text (but not code blocks)
-      function escapeHtmlTags(text) {
-        return text.replace(/<(?=[a-zA-Z\/])/g, '&lt;');
-      }
+      // Configure marked with syntax highlighting and TUI-compatible HTML handling
+      const strictStrikethroughRegex = /^(~~)(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\\]))\1(?=[^~]|$)/;
 
-      // Configure marked with syntax highlighting and HTML escaping for text
       marked.use({
         breaks: true,
         gfm: true,
+        tokenizer: {
+          // Treat HTML-like input as plain text so tags are shown verbatim,
+          // matching the TUI markdown renderer.
+          html() {
+            return undefined;
+          },
+          tag() {
+            return undefined;
+          },
+          del(src) {
+            const match = strictStrikethroughRegex.exec(src);
+            if (!match) return undefined;
+            return {
+              type: 'del',
+              raw: match[0],
+              text: match[2],
+              tokens: this.lexer.inlineTokens(match[2])
+            };
+          }
+        },
         renderer: {
+          // Sanitize link URLs with a scheme allow-list. Browsers strip C0
+          // controls from schemes, so strip them before checking and emitting.
+          link(token) {
+            const href = sanitizeMarkdownUrl(token.href);
+            if (href === null) {
+              return this.parser.parseInline(token.tokens);
+            }
+            let out = '<a href="' + escapeHtml(href) + '"';
+            if (token.title) {
+              out += ' title="' + escapeHtml(token.title) + '"';
+            }
+            out += '>' + this.parser.parseInline(token.tokens) + '</a>';
+            return out;
+          },
+          // Sanitize image src URLs with the same scheme allow-list.
+          image(token) {
+            const href = sanitizeMarkdownUrl(token.href);
+            if (href === null) {
+              return escapeHtml(token.text || '');
+            }
+            let out = '<img src="' + escapeHtml(href) + '" alt="' + escapeHtml(token.text || '') + '"';
+            if (token.title) {
+              out += ' title="' + escapeHtml(token.title) + '"';
+            }
+            out += '>';
+            return out;
+          },
           // Code blocks: syntax highlight, no HTML escaping
           code(token) {
             const code = token.text;
@@ -1475,10 +1659,6 @@
               }
             }
             return `<pre><code class="hljs">${highlighted}</code></pre>`;
-          },
-          // Text content: escape HTML tags
-          text(token) {
-            return escapeHtmlTags(escapeHtml(token.text));
           },
           // Inline code: escape HTML
           codespan(token) {
@@ -1513,6 +1693,113 @@
       const sidebar = document.getElementById('sidebar');
       const overlay = document.getElementById('sidebar-overlay');
       const hamburger = document.getElementById('hamburger');
+      const sidebarResizer = document.getElementById('sidebar-resizer');
+      const SIDEBAR_WIDTH_STORAGE_KEY = 'pi-share:v1:sidebar-width';
+      const MIN_CONTENT_WIDTH = 320;
+
+      function isMobileLayout() {
+        return window.matchMedia('(max-width: 900px)').matches;
+      }
+
+      function getSidebarBounds() {
+        const rootStyles = getComputedStyle(document.documentElement);
+        const minWidth = parseFloat(rootStyles.getPropertyValue('--sidebar-min-width')) || 240;
+        const maxWidth = parseFloat(rootStyles.getPropertyValue('--sidebar-max-width')) || 720;
+        const viewportMaxWidth = window.innerWidth - MIN_CONTENT_WIDTH;
+        return {
+          minWidth,
+          maxWidth: Math.max(minWidth, Math.min(maxWidth, viewportMaxWidth))
+        };
+      }
+
+      function clampSidebarWidth(width) {
+        const { minWidth, maxWidth } = getSidebarBounds();
+        return Math.max(minWidth, Math.min(maxWidth, width));
+      }
+
+      function applySidebarWidth(width) {
+        document.documentElement.style.setProperty('--sidebar-width', `${Math.round(clampSidebarWidth(width))}px`);
+      }
+
+      function loadSidebarWidth() {
+        try {
+          const raw = localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+          if (raw === null) return null;
+          const width = Number(raw);
+          return Number.isFinite(width) ? width : null;
+        } catch {
+          return null;
+        }
+      }
+
+      function saveSidebarWidth(width) {
+        try {
+          localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(Math.round(clampSidebarWidth(width))));
+        } catch {
+          // Ignore storage failures (e.g. private browsing restrictions)
+        }
+      }
+
+      function setupSidebarResize() {
+        const savedWidth = loadSidebarWidth();
+        if (savedWidth !== null) {
+          applySidebarWidth(savedWidth);
+        }
+
+        if (!sidebarResizer) return;
+
+        let cleanupDrag = null;
+
+        const stopDrag = (pointerId) => {
+          if (cleanupDrag) {
+            cleanupDrag(pointerId);
+            cleanupDrag = null;
+          }
+        };
+
+        sidebarResizer.addEventListener('pointerdown', (e) => {
+          if (isMobileLayout()) return;
+
+          e.preventDefault();
+          const startX = e.clientX;
+          const startWidth = sidebar.getBoundingClientRect().width;
+          document.body.classList.add('sidebar-resizing');
+          sidebarResizer.setPointerCapture?.(e.pointerId);
+
+          const onPointerMove = (event) => {
+            applySidebarWidth(startWidth + (event.clientX - startX));
+          };
+
+          cleanupDrag = (pointerIdToRelease) => {
+            document.body.classList.remove('sidebar-resizing');
+            sidebarResizer.releasePointerCapture?.(pointerIdToRelease);
+            window.removeEventListener('pointermove', onPointerMove);
+            window.removeEventListener('pointerup', onPointerUp);
+            window.removeEventListener('pointercancel', onPointerCancel);
+            saveSidebarWidth(sidebar.getBoundingClientRect().width);
+          };
+
+          const onPointerUp = (event) => stopDrag(event.pointerId);
+          const onPointerCancel = (event) => stopDrag(event.pointerId);
+
+          window.addEventListener('pointermove', onPointerMove);
+          window.addEventListener('pointerup', onPointerUp);
+          window.addEventListener('pointercancel', onPointerCancel);
+        });
+
+        sidebarResizer.addEventListener('dblclick', () => {
+          if (isMobileLayout()) return;
+          applySidebarWidth(400);
+          saveSidebarWidth(400);
+        });
+
+        window.addEventListener('resize', () => {
+          if (isMobileLayout()) return;
+          applySidebarWidth(sidebar.getBoundingClientRect().width);
+        });
+      }
+
+      setupSidebarResize();
 
       hamburger.addEventListener('click', () => {
         sidebar.classList.add('open');
@@ -1532,25 +1819,62 @@
       // Toggle states
       let thinkingExpanded = true;
       let toolOutputsExpanded = false;
+      let showHiddenMessages = false;
 
-      const toggleThinking = () => {
-        thinkingExpanded = !thinkingExpanded;
+      function setHiddenMessagesVisible(visible) {
+        showHiddenMessages = visible;
+        document.body.classList.toggle('show-hidden-messages', visible);
+        const button = document.querySelector('[data-action="toggle-hidden-messages"]');
+        if (button) {
+          button.setAttribute('aria-pressed', String(visible));
+          button.textContent = visible ? 'Hide hidden messages' : 'Show hidden messages';
+        }
+      }
+
+      function setThinkingExpanded(expanded) {
+        thinkingExpanded = expanded;
+        document.querySelector('[data-action="toggle-thinking"]')?.setAttribute('aria-pressed', String(expanded));
         document.querySelectorAll('.thinking-text').forEach(el => {
           el.style.display = thinkingExpanded ? '' : 'none';
         });
         document.querySelectorAll('.thinking-collapsed').forEach(el => {
           el.style.display = thinkingExpanded ? 'none' : 'block';
         });
-      };
+      }
 
-      const toggleToolOutputs = () => {
-        toolOutputsExpanded = !toolOutputsExpanded;
+      function setToolOutputsExpanded(expanded) {
+        toolOutputsExpanded = expanded;
+        document.querySelector('[data-action="toggle-tools"]')?.setAttribute('aria-pressed', String(expanded));
         document.querySelectorAll('.tool-output.expandable').forEach(el => {
           el.classList.toggle('expanded', toolOutputsExpanded);
         });
         document.querySelectorAll('.compaction').forEach(el => {
           el.classList.toggle('expanded', toolOutputsExpanded);
         });
+        document.querySelectorAll('.skill-invocation').forEach(el => {
+          el.classList.toggle('expanded', toolOutputsExpanded);
+        });
+      }
+
+      const attachHeaderHandlers = () => {
+        document.querySelector('[data-action="toggle-thinking"]')?.addEventListener('click', () => {
+          setThinkingExpanded(!thinkingExpanded);
+        });
+        document.querySelector('[data-action="toggle-tools"]')?.addEventListener('click', () => {
+          setToolOutputsExpanded(!toolOutputsExpanded);
+        });
+        document.querySelector('[data-action="toggle-hidden-messages"]')?.addEventListener('click', () => {
+          setHiddenMessagesVisible(!showHiddenMessages);
+        });
+      };
+
+      const isEditableTarget = (element) => {
+        if (!element) return false;
+        const tagName = element.tagName;
+        if (tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT' || tagName === 'BUTTON') {
+          return true;
+        }
+        return element.isContentEditable || Boolean(element.closest?.('[contenteditable="true"]'));
       };
 
       // Keyboard shortcuts
@@ -1560,13 +1884,21 @@
           searchQuery = '';
           navigateTo(leafId, 'bottom');
         }
-        if (e.ctrlKey && e.key === 't') {
-          e.preventDefault();
-          toggleThinking();
+
+        if (e.ctrlKey || e.metaKey || e.altKey || isEditableTarget(document.activeElement)) {
+          return;
         }
-        if (e.ctrlKey && e.key === 'o') {
+
+        const key = e.key.toLowerCase();
+        if (key === 't') {
           e.preventDefault();
-          toggleToolOutputs();
+          setThinkingExpanded(!thinkingExpanded);
+        } else if (key === 'o') {
+          e.preventDefault();
+          setToolOutputsExpanded(!toolOutputsExpanded);
+        } else if (key === 'h') {
+          e.preventDefault();
+          setHiddenMessagesVisible(!showHiddenMessages);
         }
       });
 

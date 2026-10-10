@@ -1,18 +1,18 @@
 /**
  * Test script for GitLab Duo extension
- * Run: npx tsx test.ts [model-id] [--thinking]
+ * Run: node test.ts [model-id] [--thinking]
  *
  * Examples:
- *   npx tsx test.ts                              # Test default (claude-sonnet-4-5-20250929)
- *   npx tsx test.ts gpt-5-codex                  # Test GPT-5 Codex
- *   npx tsx test.ts claude-sonnet-4-5-20250929 --thinking
+ *   node test.ts                              # Test default (claude-sonnet-4-5-20250929)
+ *   node test.ts gpt-5-codex                  # Test GPT-5 Codex
+ *   node test.ts claude-sonnet-4-5-20250929 --thinking
  */
 
-import { type Api, type Context, type Model, registerApiProvider, streamSimple } from "@mariozechner/pi-ai";
+import { type Api, type Context, type Model, registerApiProvider, streamSimple } from "@earendil-works/pi-ai/compat";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "fs";
-import { homedir } from "os";
 import { join } from "path";
-import { MODELS, streamGitLabDuo } from "./index.js";
+import { MODELS, streamGitLabDuo } from "./index.ts";
 
 const MODEL_MAP = new Map(MODELS.map((m) => [m.id, m]));
 
@@ -28,7 +28,7 @@ async function main() {
 	}
 
 	// Read auth
-	const authPath = join(homedir(), ".pi", "agent", "auth.json");
+	const authPath = join(getAgentDir(), "extensions", "auth.json");
 	const authData = JSON.parse(readFileSync(authPath, "utf-8"));
 	const gitlabCred = authData["gitlab-duo"];
 	if (!gitlabCred?.access) {

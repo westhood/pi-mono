@@ -1,14 +1,29 @@
-import { getEditorKeybindings } from "../keybindings.js";
-import { KillRing } from "../kill-ring.js";
-import { type Component, CURSOR_MARKER, type Focusable } from "../tui.js";
-import { UndoStack } from "../undo-stack.js";
-import { getSegmenter, isPunctuationChar, isWhitespaceChar, visibleWidth } from "../utils.js";
+import { getKeybindings } from "../keybindings.ts";
+import { decodeKittyPrintable } from "../keys.ts";
+import { KillRing } from "../kill-ring.ts";
+import {
+	type Component,
+	CURSOR_MARKER,
+	type Focusable,
+	renderFakeCursor,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
+} from "../tui.ts";
+import { UndoStack } from "../undo-stack.ts";
+import { getGraphemeSegmenter, isWhitespaceChar, sliceByColumn, truncateToWidth, visibleWidth } from "../utils.ts";
+import { findWordBackward, findWordForward } from "../word-navigation.ts";
 
-const segmenter = getSegmenter();
+const segmenter = getGraphemeSegmenter();
 
 interface InputState {
 	value: string;
 	cursor: number;
+}
+
+export interface InputOptions {
+	prompt?: string;
+	placeholder?: string;
+	placeholderStyle?: (text: string) => string;
 }
 
 /**
@@ -17,6 +32,10 @@ interface InputState {
 export class Input implements Component, Focusable {
 	private value: string = "";
 	private cursor: number = 0; // Cursor position in the value
+	private readonly prompt: string;
+	private readonly placeholder: string;
+	private readonly placeholderStyle: (text: string) => string;
+	private renderedStartColumn = 0;
 	public onSubmit?: (value: string) => void;
 	public onEscape?: () => void;
 
@@ -33,6 +52,12 @@ export class Input implements Component, Focusable {
 
 	// Undo support
 	private undoStack = new UndoStack<InputState>();
+
+	constructor(options: InputOptions = {}) {
+		this.prompt = options.prompt ?? "> ";
+		this.placeholder = options.placeholder ?? "";
+		this.placeholderStyle = options.placeholderStyle ?? ((text) => text);
+	}
 
 	getValue(): string {
 		return this.value;
@@ -81,69 +106,69 @@ export class Input implements Component, Focusable {
 			return;
 		}
 
-		const kb = getEditorKeybindings();
+		const kb = getKeybindings();
 
 		// Escape/Cancel
-		if (kb.matches(data, "selectCancel")) {
+		if (kb.matches(data, "tui.select.cancel")) {
 			if (this.onEscape) this.onEscape();
 			return;
 		}
 
 		// Undo
-		if (kb.matches(data, "undo")) {
+		if (kb.matches(data, "tui.editor.undo")) {
 			this.undo();
 			return;
 		}
 
 		// Submit
-		if (kb.matches(data, "submit") || data === "\n") {
+		if (kb.matches(data, "tui.input.submit") || data === "\n") {
 			if (this.onSubmit) this.onSubmit(this.value);
 			return;
 		}
 
 		// Deletion
-		if (kb.matches(data, "deleteCharBackward")) {
+		if (kb.matches(data, "tui.editor.deleteCharBackward")) {
 			this.handleBackspace();
 			return;
 		}
 
-		if (kb.matches(data, "deleteCharForward")) {
+		if (kb.matches(data, "tui.editor.deleteCharForward")) {
 			this.handleForwardDelete();
 			return;
 		}
 
-		if (kb.matches(data, "deleteWordBackward")) {
+		if (kb.matches(data, "tui.editor.deleteWordBackward")) {
 			this.deleteWordBackwards();
 			return;
 		}
 
-		if (kb.matches(data, "deleteWordForward")) {
+		if (kb.matches(data, "tui.editor.deleteWordForward")) {
 			this.deleteWordForward();
 			return;
 		}
 
-		if (kb.matches(data, "deleteToLineStart")) {
+		if (kb.matches(data, "tui.editor.deleteToLineStart")) {
 			this.deleteToLineStart();
 			return;
 		}
 
-		if (kb.matches(data, "deleteToLineEnd")) {
+		if (kb.matches(data, "tui.editor.deleteToLineEnd")) {
 			this.deleteToLineEnd();
 			return;
 		}
 
 		// Kill ring actions
-		if (kb.matches(data, "yank")) {
+		if (kb.matches(data, "tui.editor.yank")) {
 			this.yank();
 			return;
 		}
-		if (kb.matches(data, "yankPop")) {
+		if (kb.matches(data, "tui.editor.yankPop")) {
 			this.yankPop();
 			return;
 		}
 
 		// Cursor movement
-		if (kb.matches(data, "cursorLeft")) {
+		if (kb.matches(data, "tui.editor.cursorLeft")) {
 			this.lastAction = null;
 			if (this.cursor > 0) {
 				const beforeCursor = this.value.slice(0, this.cursor);
@@ -154,7 +179,7 @@ export class Input implements Component, Focusable {
 			return;
 		}
 
-		if (kb.matches(data, "cursorRight")) {
+		if (kb.matches(data, "tui.editor.cursorRight")) {
 			this.lastAction = null;
 			if (this.cursor < this.value.length) {
 				const afterCursor = this.value.slice(this.cursor);
@@ -165,25 +190,35 @@ export class Input implements Component, Focusable {
 			return;
 		}
 
-		if (kb.matches(data, "cursorLineStart")) {
+		if (kb.matches(data, "tui.editor.cursorLineStart")) {
 			this.lastAction = null;
 			this.cursor = 0;
 			return;
 		}
 
-		if (kb.matches(data, "cursorLineEnd")) {
+		if (kb.matches(data, "tui.editor.cursorLineEnd")) {
 			this.lastAction = null;
 			this.cursor = this.value.length;
 			return;
 		}
 
-		if (kb.matches(data, "cursorWordLeft")) {
+		if (kb.matches(data, "tui.editor.cursorWordLeft")) {
 			this.moveWordBackwards();
 			return;
 		}
 
-		if (kb.matches(data, "cursorWordRight")) {
+		if (kb.matches(data, "tui.editor.cursorWordRight")) {
 			this.moveWordForwards();
+			return;
+		}
+
+		// Kitty CSI-u printable character (e.g. \x1b[97u for 'a').
+		// Terminals with Kitty protocol flag 1 (disambiguate) send CSI-u for all keys,
+		// including plain printable characters. Decode before the control-char check
+		// since CSI-u sequences contain \x1b which would be rejected.
+		const kittyPrintable = decodeKittyPrintable(data);
+		if (kittyPrintable !== undefined) {
+			this.insertCharacter(kittyPrintable);
 			return;
 		}
 
@@ -196,6 +231,24 @@ export class Input implements Component, Focusable {
 		if (!hasControlChars) {
 			this.insertCharacter(data);
 		}
+	}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (event.type !== "press" || event.button !== "left" || event.y !== 0) return undefined;
+		const visibleColumn = Math.max(0, event.x - 2);
+		const targetColumn = this.renderedStartColumn + visibleColumn;
+		let currentColumn = 0;
+		this.cursor = this.value.length;
+		for (const grapheme of segmenter.segment(this.value)) {
+			const nextColumn = currentColumn + visibleWidth(grapheme.segment);
+			if (targetColumn < nextColumn) {
+				this.cursor = grapheme.index;
+				break;
+			}
+			currentColumn = nextColumn;
+		}
+		this.lastAction = null;
+		return { handled: true, focus: true };
 	}
 
 	private insertCharacter(char: string): void {
@@ -336,72 +389,15 @@ export class Input implements Component, Focusable {
 	}
 
 	private moveWordBackwards(): void {
-		if (this.cursor === 0) {
-			return;
-		}
-
+		if (this.cursor === 0) return;
 		this.lastAction = null;
-		const textBeforeCursor = this.value.slice(0, this.cursor);
-		const graphemes = [...segmenter.segment(textBeforeCursor)];
-
-		// Skip trailing whitespace
-		while (graphemes.length > 0 && isWhitespaceChar(graphemes[graphemes.length - 1]?.segment || "")) {
-			this.cursor -= graphemes.pop()?.segment.length || 0;
-		}
-
-		if (graphemes.length > 0) {
-			const lastGrapheme = graphemes[graphemes.length - 1]?.segment || "";
-			if (isPunctuationChar(lastGrapheme)) {
-				// Skip punctuation run
-				while (graphemes.length > 0 && isPunctuationChar(graphemes[graphemes.length - 1]?.segment || "")) {
-					this.cursor -= graphemes.pop()?.segment.length || 0;
-				}
-			} else {
-				// Skip word run
-				while (
-					graphemes.length > 0 &&
-					!isWhitespaceChar(graphemes[graphemes.length - 1]?.segment || "") &&
-					!isPunctuationChar(graphemes[graphemes.length - 1]?.segment || "")
-				) {
-					this.cursor -= graphemes.pop()?.segment.length || 0;
-				}
-			}
-		}
+		this.cursor = findWordBackward(this.value, this.cursor);
 	}
 
 	private moveWordForwards(): void {
-		if (this.cursor >= this.value.length) {
-			return;
-		}
-
+		if (this.cursor >= this.value.length) return;
 		this.lastAction = null;
-		const textAfterCursor = this.value.slice(this.cursor);
-		const segments = segmenter.segment(textAfterCursor);
-		const iterator = segments[Symbol.iterator]();
-		let next = iterator.next();
-
-		// Skip leading whitespace
-		while (!next.done && isWhitespaceChar(next.value.segment)) {
-			this.cursor += next.value.segment.length;
-			next = iterator.next();
-		}
-
-		if (!next.done) {
-			const firstGrapheme = next.value.segment;
-			if (isPunctuationChar(firstGrapheme)) {
-				// Skip punctuation run
-				while (!next.done && isPunctuationChar(next.value.segment)) {
-					this.cursor += next.value.segment.length;
-					next = iterator.next();
-				}
-			} else {
-				// Skip word run
-				while (!next.done && !isWhitespaceChar(next.value.segment) && !isPunctuationChar(next.value.segment)) {
-					this.cursor += next.value.segment.length;
-					next = iterator.next();
-				}
-			}
-		}
+		this.cursor = findWordForward(this.value, this.cursor);
 	}
 
 	private handlePaste(pastedText: string): void {
@@ -409,7 +405,7 @@ export class Input implements Component, Focusable {
 		this.pushUndo();
 
 		// Clean the pasted text - remove newlines and carriage returns
-		const cleanText = pastedText.replace(/\r\n/g, "").replace(/\r/g, "").replace(/\n/g, "");
+		const cleanText = pastedText.replace(/\r\n/g, "").replace(/\r/g, "").replace(/\n/g, "").replace(/\t/g, "    ");
 
 		// Insert at cursor position
 		this.value = this.value.slice(0, this.cursor) + cleanText + this.value.slice(this.cursor);
@@ -422,65 +418,60 @@ export class Input implements Component, Focusable {
 
 	render(width: number): string[] {
 		// Calculate visible window
-		const prompt = "> ";
-		const availableWidth = width - prompt.length;
+		const availableWidth = width - visibleWidth(this.prompt);
 
 		if (availableWidth <= 0) {
-			return [prompt];
+			return [truncateToWidth(this.prompt, width, "")];
+		}
+
+		if (this.value.length === 0 && this.placeholder) {
+			const placeholder = truncateToWidth(this.placeholder, availableWidth, "");
+			const graphemes = [...segmenter.segment(placeholder)];
+			const atCursor = graphemes[0]?.segment ?? " ";
+			const afterCursor = placeholder.slice(atCursor.length);
+			const marker = this.focused ? CURSOR_MARKER : "";
+			const cursorChar = renderFakeCursor(this.placeholderStyle(atCursor));
+			const textWithCursor = marker + cursorChar + this.placeholderStyle(afterCursor);
+			const padding = " ".repeat(Math.max(0, availableWidth - visibleWidth(textWithCursor)));
+			return [this.prompt + textWithCursor + padding];
 		}
 
 		let visibleText = "";
 		let cursorDisplay = this.cursor;
+		this.renderedStartColumn = 0;
+		const totalWidth = visibleWidth(this.value);
 
-		if (this.value.length < availableWidth) {
+		if (totalWidth < availableWidth) {
 			// Everything fits (leave room for cursor at end)
 			visibleText = this.value;
 		} else {
 			// Need horizontal scrolling
-			// Reserve one character for cursor if it's at the end
+			// Reserve one column for cursor if it's at the end
 			const scrollWidth = this.cursor === this.value.length ? availableWidth - 1 : availableWidth;
-			const halfWidth = Math.floor(scrollWidth / 2);
+			const cursorCol = visibleWidth(this.value.slice(0, this.cursor));
 
-			const findValidStart = (start: number) => {
-				while (start < this.value.length) {
-					const charCode = this.value.charCodeAt(start);
-					// this is low surrogate, not a valid start
-					if (charCode >= 0xdc00 && charCode < 0xe000) {
-						start++;
-						continue;
-					}
-					break;
+			if (scrollWidth > 0) {
+				const halfWidth = Math.floor(scrollWidth / 2);
+				let startCol = 0;
+
+				if (cursorCol < halfWidth) {
+					// Cursor near start
+					startCol = 0;
+				} else if (cursorCol > totalWidth - halfWidth) {
+					// Cursor near end
+					startCol = Math.max(0, totalWidth - scrollWidth);
+				} else {
+					// Cursor in middle
+					startCol = Math.max(0, cursorCol - halfWidth);
 				}
-				return start;
-			};
 
-			const findValidEnd = (end: number) => {
-				while (end > 0) {
-					const charCode = this.value.charCodeAt(end - 1);
-					// this is high surrogate, might be split.
-					if (charCode >= 0xd800 && charCode < 0xdc00) {
-						end--;
-						continue;
-					}
-					break;
-				}
-				return end;
-			};
-
-			if (this.cursor < halfWidth) {
-				// Cursor near start
-				visibleText = this.value.slice(0, findValidEnd(scrollWidth));
-				cursorDisplay = this.cursor;
-			} else if (this.cursor > this.value.length - halfWidth) {
-				// Cursor near end
-				const start = findValidStart(this.value.length - scrollWidth);
-				visibleText = this.value.slice(start);
-				cursorDisplay = this.cursor - start;
+				this.renderedStartColumn = startCol;
+				visibleText = sliceByColumn(this.value, startCol, scrollWidth, true);
+				const beforeCursor = sliceByColumn(this.value, startCol, Math.max(0, cursorCol - startCol), true);
+				cursorDisplay = beforeCursor.length;
 			} else {
-				// Cursor in middle
-				const start = findValidStart(this.cursor - halfWidth);
-				visibleText = this.value.slice(start, findValidEnd(start + scrollWidth));
-				cursorDisplay = halfWidth;
+				visibleText = "";
+				cursorDisplay = 0;
 			}
 		}
 
@@ -496,14 +487,14 @@ export class Input implements Component, Focusable {
 		// Hardware cursor marker (zero-width, emitted before fake cursor for IME positioning)
 		const marker = this.focused ? CURSOR_MARKER : "";
 
-		// Use inverse video to show cursor
-		const cursorChar = `\x1b[7m${atCursor}\x1b[27m`; // ESC[7m = reverse video, ESC[27m = normal
+		// TUI draws the fake cursor in reverse video, or omits it when the hardware cursor is shown
+		const cursorChar = renderFakeCursor(atCursor);
 		const textWithCursor = beforeCursor + marker + cursorChar + afterCursor;
 
 		// Calculate visual width
 		const visualLength = visibleWidth(textWithCursor);
 		const padding = " ".repeat(Math.max(0, availableWidth - visualLength));
-		const line = prompt + textWithCursor + padding;
+		const line = this.prompt + textWithCursor + padding;
 
 		return [line];
 	}
